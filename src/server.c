@@ -23,7 +23,7 @@
 #define PORT 50000
 #define ECC_KEY_LEN 32
 
-#define MAX_MSG_LEN 4096
+#define MAX_MSG_LEN 1024
 
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -278,14 +278,12 @@ void do_communication(int infd)
     //printf("Communication Phase\n");
     int ret;
 	char buf[MAX_MSG_LEN] = {};
-	while (1) {
-        ret = read(infd, buf, sizeof(buf));
-		if (ret == -1) {
-		    perror("do_communication()");
-			break;
-		}
-		write(infd, buf, sizeof(ret));
+    ret = read(infd, buf, sizeof(buf));
+    if (ret == -1) {
+	    perror("do_communication()");
+		return;
 	}
+	write(infd, buf, sizeof(ret));
 }
 
 int config_ktls(int infd, const uint8_t *session_key)

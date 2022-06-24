@@ -20,7 +20,7 @@
 
 #define PORT 50000
 #define HOST "192.168.56.105"
-#define MAX_MSG_LEN 4096
+#define MAX_MSG_LEN 1024
 #define ECC_KEY_LEN 32
 
 double tvgetf()
@@ -235,11 +235,11 @@ int config_ktls(int infd, const uint8_t *session_key)
 int do_communication(int sockfd)
 {
     int ret;
-	char msg[MAX_MSG_LEN] = "Hello";
+	char msg[MAX_MSG_LEN] = {};
 	/* Input msg */
     char buf[MAX_MSG_LEN] = {};
 
-	write(sockfd, msg, strlen(msg));
+	write(sockfd, msg, sizeof(msg));
 	ret = read(sockfd, buf, sizeof(buf));
     if (strncmp(msg, buf, ret) != 0) {
 		return -1;
@@ -303,6 +303,7 @@ int main(int argc , char *argv[])
 	return -1;
     }
 
+	double t1 = tvgetf();
 	//printf("Authentication Phase...\n");
     ret = do_authentication(sockfd, session_key, aid, f, rng, sha);
     if (ret == 0) {
@@ -321,13 +322,19 @@ int main(int argc , char *argv[])
     
 	//printf("Communication Phase...\n");
 	ret = do_communication(sockfd);
+	double t2 = tvgetf();
 
 	if (ret < 0) {
 	    printf("communication failed\n");
 	} else {
-	    printf("comm success\n");
+	    printf("comm success, %f msec\n", (t2-t1)*1000);
 	}
-    
+	FILE *fp = fopen("auth_enc_proposed.txt", "a");
+	char ctmp[10];
+	sprintf(ctmp, "%f", (t2-t1)*1000);
+	fwrite(ctmp, 1, sizeof(double), fp);
+	fwrite("\n", 1, 1, fp);
+	fclose(fp);
 	close(sockfd);
     return 0;
 }
