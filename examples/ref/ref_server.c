@@ -8,17 +8,21 @@
 #include <stdio.h>
 #include <string.h>
 #include <wolfssl/options.h>
+#include <wolfssl/wolfcrypt/aes.h>
 #include <wolfssl/wolfcrypt/sha256.h>
 #include <wolfssl/wolfcrypt/random.h>
 
 #include <stdint.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
+#include <linux/tls.h>
+#include <netinet/tcp.h>
 
 #define LISTENQ 1024
 #define PORT 40000
 
 #define BUFFER_SIZE 1024 // Should be larger than Sha digest size we use (cuz we may concatenate some variables)
+#define MSG_SIZE 1024
 
 double tvgetf()
 {
@@ -89,9 +93,9 @@ int main()
 
     // PSK
     byte psk[SHA256_DIGEST_SIZE] = {};
-	for (int i=0; i<SHA256_DIGEST_SIZE; i++) {
-	    psk[i] = 255;
-	}
+    for (int i=0; i<SHA256_DIGEST_SIZE; i++) {
+        psk[i] = 255;
+    }
     /*if (wc_RNG_GenerateBlock(&rng, psk, SHA256_DIGEST_SIZE) != 0) {
         printf("Generate psk failed\n");
 	return -1;
@@ -104,34 +108,34 @@ int main()
     }*/
 
     int listenfd = open_listenfd(PORT);
-	/* Authentication Phase */
-	struct sockaddr_in clientaddr;
-	socklen_t inlen = sizeof(clientaddr);
+    /* Authentication Phase */
+    struct sockaddr_in clientaddr;
+    socklen_t inlen = sizeof(clientaddr);
 
-	int sockfd = accept(listenfd, (struct sockaddr *) &clientaddr, &inlen);
-	if (sockfd < 0) {
-	    printf("accept error\n");
-		return -1;
-	} 
-	/* Client Sends message 3 to server */
+    int sockfd = accept(listenfd, (struct sockaddr *) &clientaddr, &inlen);
+    if (sockfd < 0) {
+        printf("accept error\n");
+        return -1;
+    } 
+    /* Client Sends message 3 to server */
     uint8_t buf[4096] = {};
 
-	uint8_t m1[SHA256_DIGEST_SIZE] = {};
-	uint8_t m2[SHA256_DIGEST_SIZE] = {};
-	uint8_t f3[SHA256_DIGEST_SIZE] = {};
-	uint8_t aid_i[SHA256_DIGEST_SIZE] = {};
+    uint8_t m1[SHA256_DIGEST_SIZE] = {};
+    uint8_t m2[SHA256_DIGEST_SIZE] = {};
+    uint8_t f3[SHA256_DIGEST_SIZE] = {};
+    uint8_t aid_i[SHA256_DIGEST_SIZE] = {};
 
-	double t1 = tvgetf();
-	ret = read(sockfd, buf, sizeof(buf));
+    double t1 = tvgetf();
+    ret = read(sockfd, buf, sizeof(buf));
 
-	if (ret != SHA256_DIGEST_SIZE*4) {
-	    printf("read failed\n");
-		return -1;
-	}
-	memcpy(m1, buf, SHA256_DIGEST_SIZE);
-	memcpy(m2, buf+SHA256_DIGEST_SIZE, SHA256_DIGEST_SIZE);
-	memcpy(f3, buf+SHA256_DIGEST_SIZE*2, SHA256_DIGEST_SIZE);
-	memcpy(aid_i, buf+SHA256_DIGEST_SIZE*3, SHA256_DIGEST_SIZE);
+    if (ret != SHA256_DIGEST_SIZE*4) {
+        printf("read failed\n");
+	return -1;
+    }
+    memcpy(m1, buf, SHA256_DIGEST_SIZE);
+    memcpy(m2, buf+SHA256_DIGEST_SIZE, SHA256_DIGEST_SIZE);
+    memcpy(f3, buf+SHA256_DIGEST_SIZE*2, SHA256_DIGEST_SIZE);
+    memcpy(aid_i, buf+SHA256_DIGEST_SIZE*3, SHA256_DIGEST_SIZE);
 
     /* Server regenerate client's identity with m1, m2. f3, aid_i, psk*/
     // f1_bar
@@ -244,20 +248,20 @@ int main()
     memcpy(buf+SHA256_DIGEST_SIZE, m22, SHA256_DIGEST_SIZE);
     memcpy(buf+SHA256_DIGEST_SIZE*2, aid_j, SHA256_DIGEST_SIZE);
 
-	ret = write(sockfd, buf, SHA256_DIGEST_SIZE*3);
-	if (ret != SHA256_DIGEST_SIZE*3) {
-	    printf("write failed\n");
-		return -1;
-	}
+    ret = write(sockfd, buf, SHA256_DIGEST_SIZE*3);
+    if (ret != SHA256_DIGEST_SIZE*3) {
+        printf("write failed\n");
+	return -1;
+    }
 
     /* Client sends message 5 to server*/
     byte m111[SHA256_DIGEST_SIZE] = {};
-	ret = read(sockfd, buf, sizeof(buf));
-	if (ret != SHA256_DIGEST_SIZE) {
-	    printf("read2 may failed\n");
-		return -1;
-	}
-	memcpy(m111, buf, SHA256_DIGEST_SIZE);
+    ret = read(sockfd, buf, sizeof(buf));
+    if (ret != SHA256_DIGEST_SIZE) {
+        printf("read2 may failed\n");
+	return -1;
+    }
+    memcpy(m111, buf, SHA256_DIGEST_SIZE);
 
     wc_Sha256Update(&sha, r2, sizeof(r2));
     wc_Sha256Final(&sha, hash_tmp); // hash_tmp == hash(r2) here
@@ -269,14 +273,56 @@ int main()
 	    return -1;
 	}
     }
-	double t2 = tvgetf();
-    printf("Pass! %f\n", (t2-t1)*1000);
+    //double t2 = tvgetf();
+    //printf("Pass! %f\n", (t2-t1)*1000);
 
     printf("\nWhole Process Finished successfully, exit!\n");
+
+    /* Communication Phase */
+    char iv[TLS_CIPHER_AES_GCM_256_IV_SIZE] = {};
+    char authTag[16] = {};
+    char authIn[20] = {};
+
+    Aes aes[1];
+
+    ret = wc_AesGcmSetKey(aes, sk1, sizeof(sk1));
+    if (ret != 0) {
+        perror("AesGcmSetKey()");
+	return -1;
+    }
+
+    char msg[MSG_SIZE+sizeof(authTag)] = {};
+    ret = read(sockfd, msg, sizeof(msg));
+    if (ret < 0) {
+        perror("read()");
+	return -1;
+    }
+
+    printf("read %d bytes\n", ret);
+
+    char resultP[MSG_SIZE] = {};
+    ret = wc_AesGcmDecrypt(aes, resultP, msg, sizeof(resultP), iv, sizeof(iv), msg+sizeof(resultP), sizeof(authTag), authIn, sizeof(authIn));
+    if (ret != 0) {
+        printf("dec. failed, %d\n", ret);
+	return -1;
+    }
+
+    iv[0] = ~iv[0];
+
+    ret = wc_AesGcmEncrypt(aes, msg, resultP, sizeof(resultP), iv, sizeof(iv), msg+sizeof(resultP), sizeof(authTag), authIn, sizeof(authIn));
+    if (ret != 0) {
+        printf("enc. failed, %d\n", ret);
+	return -1;
+    }
+
+    write(sockfd, msg, sizeof(msg));
+
+    double t2 = tvgetf();
+    
     /* Free WolfSSL structure */
     wc_Sha256Free(&sha);
-    if (wc_FreeRng(&rng) != 0)
+    if (wc_FreeRng(&rng) != 0) {
         return -1;
-    
+    }
     return 0;
 }

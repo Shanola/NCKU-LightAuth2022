@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <wolfssl/options.h>
+#include <wolfssl/wolfcrypt/aes.h>
 #include <wolfssl/wolfcrypt/sha256.h>
 #include <wolfssl/wolfcrypt/random.h>
 
@@ -15,6 +16,10 @@
 #include <error.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
+#include <linux/tls.h>
+#include <netinet/tcp.h>
+
+#define MSG_SIZE 1024
 
 #define BUFFER_SIZE 1024 // Should be larger than Sha digest size we use (cuz we may concatenate some variables)
 #define HOST "127.0.0.1"
@@ -134,6 +139,7 @@ int main()
         f3[i] = psk[i] ^ hash_f1[i];
     }
 
+    double t1 = tvgetf();
 
     /* Authentication Phase */
     byte r1[SHA256_DIGEST_SIZE] = {};
@@ -258,6 +264,53 @@ int main()
 		return -1;
 	}
     printf("\nThe Client Process Finished successfully, exit!\n");
+
+    /* Communication Phase */
+    char iv[8] = {};
+    char authTag[16] = {};
+    char authIn[20] = {};
+
+    Aes aes[1];
+
+    ret = wc_AesGcmSetKey(aes, sk2, sizeof(sk2));
+    if (ret != 0) {
+        printf("AesGcmSetKey failed\n");
+	return -1;
+    }
+    char plain[MSG_SIZE] = {};
+    char resultP[MSG_SIZE] = {};
+    char buff[sizeof(plain)+sizeof(authTag)] = {};
+
+    ret = wc_AesGcmEncrypt(aes, buff, plain, sizeof(plain), iv, sizeof(iv), buff+sizeof(plain), sizeof(authTag), authIn, sizeof(authIn));
+    if (ret != 0) {
+        printf("Enc failed\n");
+	return -1;
+    }
+    iv[0] = ~iv[0];
+
+    write(sockfd, buff, sizeof(buff));
+
+    ret = read(sockfd, buff, sizeof(buff));
+    if (ret < 0 ) {
+        printf("read failed\n");
+	return -1;
+    }
+    ret = wc_AesGcmDecrypt(aes, resultP, buff, sizeof(resultP), iv, sizeof(iv), buff+sizeof(resultP), sizeof(authTag), authIn, sizeof(authIn));
+    if (ret != 0) {
+        printf("dec. failed\n");
+	return -1;
+    }
+    
+    double t2 = tvgetf();
+
+    FILE *fp = fopen("auth_enc_ref.txt", "a");
+    char ctmp[10];
+    sprintf(ctmp, "%f", (t2-t1)*1000);
+    fwrite(ctmp, 1, sizeof(double), fp);
+    fwrite("\n", 1, 1, fp);
+    fclose(fp);
+
+
     /* Free WolfSSL structure */
     wc_Sha256Free(&sha);
     if (wc_FreeRng(&rng) != 0)
